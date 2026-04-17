@@ -66,6 +66,9 @@ type SheetState = {
 
 type DragState = {
   cellId: string
+  index: number
+  layoutCell: LayoutCell
+  photo: PhotoAsset
   pointerId: number
   startX: number
   startY: number
@@ -277,7 +280,16 @@ function App() {
   }
 
   const setPaper = (paperId: string) => {
-    updateState((current) => ({ ...current, paperId }))
+    updateState((current) => {
+      const nextPaper =
+        paperPresets.find((preset) => preset.id === paperId) ?? paperPresets[0]
+
+      return {
+        ...current,
+        paperId: nextPaper.id,
+        cells: normalizeCellsForSheet(current, layout, nextPaper),
+      }
+    })
   }
 
   const setLayout = (layoutId: string) => {
@@ -285,11 +297,16 @@ function App() {
       const nextLayout =
         layoutPresets.find((preset) => preset.id === layoutId) ??
         layoutPresets[0]
+      const resizedCells = resizeCells(current.cells, nextLayout.cells.length)
+      const nextState = {
+        ...current,
+        layoutId: nextLayout.id,
+        cells: resizedCells,
+      }
 
       return {
-        ...current,
-        layoutId,
-        cells: resizeCells(current.cells, nextLayout.cells.length),
+        ...nextState,
+        cells: normalizeCellsForSheet(nextState, nextLayout, paper),
       }
     })
   }
@@ -388,14 +405,21 @@ function App() {
   }
 
   const updateActiveCell = (updates: Partial<CellState>) => {
-    if (!activeCell) {
+    if (!activeCell || activeIndex < 0 || !activePhoto) {
       return
     }
 
     updateState((current) => ({
       ...current,
       cells: current.cells.map((cell) =>
-        cell.id === activeCell.id ? { ...cell, ...updates } : cell,
+        cell.id === activeCell.id
+          ? constrainCellTransform(
+              { ...cell, ...updates },
+              activePhoto,
+              layout.cells[activeIndex],
+              paper,
+            )
+          : cell,
       ),
     }))
   }
@@ -434,13 +458,19 @@ function App() {
   ) => {
     updateState((current) => ({ ...current, activeCellId: cell.id }))
 
-    if (!getPhotoForCell(cell, index, state)) {
+    const photo = getPhotoForCell(cell, index, state)
+    const layoutCell = layout.cells[index]
+
+    if (!photo || !layoutCell) {
       return
     }
 
     const bounds = event.currentTarget.getBoundingClientRect()
     dragRef.current = {
       cellId: cell.id,
+      index,
+      layoutCell,
+      photo,
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
@@ -473,7 +503,12 @@ function App() {
       ...current,
       cells: current.cells.map((cell) =>
         cell.id === drag.cellId
-          ? { ...cell, offsetX: nextX, offsetY: nextY }
+          ? constrainCellTransform(
+              { ...cell, offsetX: nextX, offsetY: nextY },
+              drag.photo,
+              drag.layoutCell,
+              paper,
+            )
           : cell,
       ),
     }))
@@ -490,7 +525,10 @@ function App() {
     cell: CellState,
     index: number,
   ) => {
-    if (!getPhotoForCell(cell, index, state)) {
+    const photo = getPhotoForCell(cell, index, state)
+    const layoutCell = layout.cells[index]
+
+    if (!photo || !layoutCell) {
       return
     }
 
@@ -501,7 +539,12 @@ function App() {
       activeCellId: cell.id,
       cells: current.cells.map((item) =>
         item.id === cell.id
-          ? { ...item, zoom: clamp(round(item.zoom + delta, 2), 0.5, 4) }
+          ? constrainCellTransform(
+              { ...item, zoom: clamp(round(item.zoom + delta, 2), 1, 4) },
+              photo,
+              layoutCell,
+              paper,
+            )
           : item,
       ),
     }))
@@ -815,7 +858,7 @@ function App() {
                 <RangeControl
                   label="확대"
                   max={4}
-                  min={0.5}
+                  min={1}
                   step={0.05}
                   value={activeCell.zoom}
                   onChange={(value) => updateActiveCell({ zoom: value })}
@@ -1272,13 +1315,78 @@ function getImageStyle(
     ? photo.height / photo.width
     : photo.width / photo.height
   const coverByHeight = imageAspect > frameAspect
+  const constrainedCell = constrainCellTransform(cell, photo, layoutCell, paper)
 
   return {
-    left: `${50 + cell.offsetX}%`,
-    top: `${50 + cell.offsetY}%`,
+    left: `${50 + constrainedCell.offsetX}%`,
+    top: `${50 + constrainedCell.offsetY}%`,
     width: coverByHeight ? 'auto' : '100%',
     height: coverByHeight ? '100%' : 'auto',
-    transform: `translate(-50%, -50%) rotate(${cell.rotation}deg) scale(${cell.zoom})`,
+    transform: `translate(-50%, -50%) rotate(${constrainedCell.rotation}deg) scale(${constrainedCell.zoom})`,
+  }
+}
+
+function normalizeCellsForSheet(
+  state: SheetState,
+  layout: LayoutPreset,
+  paper: PaperPreset,
+): CellState[] {
+  return state.cells.map((cell, index) => {
+    const layoutCell = layout.cells[index]
+    const photo = getPhotoForCell(cell, index, state)
+
+    if (!layoutCell || !photo) {
+      return cell
+    }
+
+    return constrainCellTransform(cell, photo, layoutCell, paper)
+  })
+}
+
+function constrainCellTransform(
+  cell: CellState,
+  photo: PhotoAsset,
+  layoutCell: LayoutCell,
+  paper: PaperPreset,
+): CellState {
+  const zoom = clamp(round(cell.zoom, 2), 1, 4)
+  const { maxOffsetX, maxOffsetY } = getPhotoFrameMetrics(
+    photo,
+    cell.rotation,
+    layoutCell,
+    paper,
+    zoom,
+  )
+
+  return {
+    ...cell,
+    zoom,
+    offsetX: clamp(round(cell.offsetX, 2), -maxOffsetX, maxOffsetX),
+    offsetY: clamp(round(cell.offsetY, 2), -maxOffsetY, maxOffsetY),
+  }
+}
+
+function getPhotoFrameMetrics(
+  photo: PhotoAsset,
+  rotation: number,
+  layoutCell: LayoutCell,
+  paper: PaperPreset,
+  zoom: number,
+): { maxOffsetX: number; maxOffsetY: number } {
+  const frameAspect =
+    (layoutCell.width * paper.widthIn) / (layoutCell.height * paper.heightIn)
+  const normalizedRotation = ((rotation % 360) + 360) % 360
+  const rotated = normalizedRotation % 180 !== 0
+  const imageAspect = rotated ? photo.height / photo.width : photo.width / photo.height
+  const coverByHeight = imageAspect > frameAspect
+  const baseWidth = coverByHeight ? (imageAspect / frameAspect) * 100 : 100
+  const baseHeight = coverByHeight ? 100 : (frameAspect / imageAspect) * 100
+  const scaledWidth = baseWidth * zoom
+  const scaledHeight = baseHeight * zoom
+
+  return {
+    maxOffsetX: Math.max(0, round((scaledWidth - 100) / 2, 2)),
+    maxOffsetY: Math.max(0, round((scaledHeight - 100) / 2, 2)),
   }
 }
 
@@ -1383,6 +1491,24 @@ function drawPhoto(
   rect: { height: number; width: number; x: number; y: number },
   rounded: boolean,
 ) {
+  const constrainedCell = constrainCellTransform(
+    cell,
+    photo,
+    {
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+    },
+    {
+      id: 'canvas',
+      name: 'canvas',
+      shortName: 'canvas',
+      widthIn: rect.width,
+      heightIn: rect.height,
+    },
+  )
+
   context.save()
   if (rounded) {
     roundedRect(context, rect.x, rect.y, rect.width, rect.height, EXPORT_DPI * 0.04)
@@ -1393,19 +1519,19 @@ function drawPhoto(
     context.clip()
   }
 
-  const rotated = cell.rotation % 180 !== 0
+  const rotated = constrainedCell.rotation % 180 !== 0
   const sourceWidth = photo.width
   const sourceHeight = photo.height
   const rotatedWidth = rotated ? sourceHeight : sourceWidth
   const rotatedHeight = rotated ? sourceWidth : sourceHeight
   const coverScale =
-    Math.max(rect.width / rotatedWidth, rect.height / rotatedHeight) * cell.zoom
+    Math.max(rect.width / rotatedWidth, rect.height / rotatedHeight) * constrainedCell.zoom
 
   context.translate(
-    rect.x + rect.width / 2 + (cell.offsetX / 100) * rect.width,
-    rect.y + rect.height / 2 + (cell.offsetY / 100) * rect.height,
+    rect.x + rect.width / 2 + (constrainedCell.offsetX / 100) * rect.width,
+    rect.y + rect.height / 2 + (constrainedCell.offsetY / 100) * rect.height,
   )
-  context.rotate((cell.rotation * Math.PI) / 180)
+  context.rotate((constrainedCell.rotation * Math.PI) / 180)
   context.drawImage(
     image,
     (-sourceWidth * coverScale) / 2,
