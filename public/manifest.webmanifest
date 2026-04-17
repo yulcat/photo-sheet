@@ -1,0 +1,18 @@
+{
+  "name": "사진 한판",
+  "short_name": "사진 한판",
+  "description": "여러 사진을 한 장의 인화지에 배치해 출력용 이미지로 저장합니다.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#f7f8f5",
+  "theme_color": "#e2f4f1",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
