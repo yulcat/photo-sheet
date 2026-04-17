@@ -75,6 +75,14 @@ type DragState = {
   height: number
 }
 
+type StepId = 'photos' | 'layout' | 'adjust' | 'save'
+
+type FlowStep = {
+  id: StepId
+  label: string
+  summary: string
+}
+
 const paperPresets: PaperPreset[] = [
   {
     id: '4x6-portrait',
@@ -173,6 +181,29 @@ const colorOptions = [
   { label: '잉크', value: '#111827' },
 ]
 
+const flowSteps: FlowStep[] = [
+  {
+    id: 'photos',
+    label: '사진 담기',
+    summary: '인화할 사진만 먼저 고르세요.',
+  },
+  {
+    id: 'layout',
+    label: '용지/레이아웃',
+    summary: '용지와 칸 수를 정하세요.',
+  },
+  {
+    id: 'adjust',
+    label: '칸별 조정',
+    summary: '칸을 누르고 사진을 맞추세요.',
+  },
+  {
+    id: 'save',
+    label: '저장',
+    summary: 'PNG나 JPEG로 저장하세요.',
+  },
+]
+
 const defaultState = (): SheetState => ({
   paperId: '4x6-portrait',
   layoutId: 'four-grid',
@@ -188,6 +219,9 @@ const defaultState = (): SheetState => ({
 
 function App() {
   const [state, setState] = useState<SheetState>(() => loadState())
+  const [step, setStep] = useState<StepId>(() =>
+    hasStoredPhotos() ? 'layout' : 'photos',
+  )
   const [storageMessage, setStorageMessage] = useState('')
   const [exporting, setExporting] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -290,6 +324,7 @@ function App() {
       }
     })
 
+    setStep('layout')
     event.target.value = ''
   }
 
@@ -310,9 +345,13 @@ function App() {
         activeCellId: current.activeCellId ?? nextCells[0]?.id ?? null,
       }
     })
+    setStep('layout')
   }
 
   const removePhoto = (photoId: string) => {
+    const removingLastPhoto =
+      state.photos.length <= 1 && state.photos.some((photo) => photo.id === photoId)
+
     updateState((current) => ({
       ...current,
       photos: current.photos.filter((photo) => photo.id !== photoId),
@@ -320,6 +359,10 @@ function App() {
         cell.photoId === photoId ? { ...cell, photoId: null } : cell,
       ),
     }))
+
+    if (removingLastPhoto) {
+      setStep('photos')
+    }
   }
 
   const assignPhoto = (photoId: string) => {
@@ -381,6 +424,7 @@ function App() {
   const clearWork = () => {
     updateState(() => defaultState())
     localStorage.removeItem(STORAGE_KEY)
+    setStep('photos')
   }
 
   const handlePointerDown = (
@@ -481,40 +525,103 @@ function App() {
     aspectRatio: `${paper.widthIn} / ${paper.heightIn}`,
     background: state.background,
   }
+  const currentStepIndex = flowSteps.findIndex((item) => item.id === step)
+  const currentStep = flowSteps[currentStepIndex] ?? flowSteps[0]
+  const selectedLabel = activeIndex >= 0 ? `${activeIndex + 1}번 칸` : '선택 없음'
+  const primaryLabel =
+    step === 'photos'
+      ? state.photos.length > 0
+        ? '다음: 용지/레이아웃'
+        : '사진 선택하기'
+      : step === 'layout'
+        ? '다음: 칸별 조정'
+        : step === 'adjust'
+          ? '다음: 저장'
+          : exporting
+            ? '저장 중'
+            : 'PNG 저장'
+  const primaryDisabled = step === 'save' && (exporting || state.photos.length === 0)
 
-  return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">브라우저 안에서만 작업</p>
-          <h1>사진 한판</h1>
-          <p className="intro">
-            아기와 가족 사진을 한 장의 인화지에 맞춰 배치하고 바로 저장해요.
-          </p>
+  const goToPreviousStep = () => {
+    const previous = flowSteps[currentStepIndex - 1]
+    if (previous) {
+      setStep(previous.id)
+    }
+  }
+
+  const runPrimaryAction = () => {
+    if (step === 'photos') {
+      if (state.photos.length === 0) {
+        fileInputRef.current?.click()
+        return
+      }
+      setStep('layout')
+      return
+    }
+
+    if (step === 'layout') {
+      setStep('adjust')
+      return
+    }
+
+    if (step === 'adjust') {
+      setStep('save')
+      return
+    }
+
+    void exportImage('image/png')
+  }
+
+  const selectCell = (cellId: string) => {
+    updateState((current) => ({ ...current, activeCellId: cellId }))
+  }
+
+  const renderStepPanel = () => {
+    if (step === 'photos') {
+      return (
+        <div className="step-content">
+          <section className="flow-section">
+            <div className="section-heading">
+              <h2>사진 담기</h2>
+              <span>{state.photos.length}장</span>
+            </div>
+            <p className="helper-text">
+              인화할 사진을 여러 장 한 번에 고르세요. 사진은 서버로 올라가지
+              않고 이 브라우저에만 남습니다.
+            </p>
+            {state.photos.length > 0 ? (
+              <div className="photo-count-card">
+                <strong>{state.photos.length}장 담김</strong>
+                <span>다음 단계에서 용지와 배치를 고르면 자동으로 채워집니다.</span>
+              </div>
+            ) : (
+              <div className="quiet-box">
+                <strong>먼저 사진만 담으면 돼요.</strong>
+                <span>세부 조정은 뒤 단계에서 필요할 때만 열립니다.</span>
+              </div>
+            )}
+            <div className="secondary-actions">
+              {state.photos.length > 0 ? (
+                <button type="button" onClick={() => fileInputRef.current?.click()}>
+                  사진 더 담기
+                </button>
+              ) : null}
+              <button type="button" onClick={() => void addSamples()}>
+                샘플로 보기
+              </button>
+            </div>
+          </section>
         </div>
-        <button
-          className="primary-action"
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-        >
-          사진 선택
-        </button>
-        <input
-          ref={fileInputRef}
-          className="visually-hidden"
-          type="file"
-          accept="image/*"
-          multiple
-          onChange={handleFiles}
-        />
-      </header>
+      )
+    }
 
-      <section className="workspace" aria-label="사진 한판 편집기">
-        <aside className="panel panel-left" aria-label="인화 설정">
-          <section className="control-group">
-            <div className="group-title">
-              <h2>인화지</h2>
-              <span>{paper.shortName}</span>
+    if (step === 'layout') {
+      return (
+        <div className="step-content">
+          <section className="flow-section">
+            <div className="section-heading">
+              <h2>용지</h2>
+              <span>{paper.name}</span>
             </div>
             <div className="preset-grid">
               {paperPresets.map((preset) => (
@@ -532,9 +639,9 @@ function App() {
             </div>
           </section>
 
-          <section className="control-group">
-            <div className="group-title">
-              <h2>배치</h2>
+          <section className="flow-section">
+            <div className="section-heading">
+              <h2>레이아웃</h2>
               <span>{layout.cells.length}칸</span>
             </div>
             <div className="layout-list">
@@ -556,8 +663,8 @@ function App() {
             </div>
           </section>
 
-          <section className="control-group">
-            <div className="group-title">
+          <section className="flow-section compact-options">
+            <div className="section-heading">
               <h2>간격</h2>
               <span>mm</span>
             </div>
@@ -581,32 +688,34 @@ function App() {
                 updateState((current) => ({ ...current, gapMm: value }))
               }
             />
-            <label className="switch-row">
-              <input
-                checked={state.rounded}
-                type="checkbox"
-                onChange={(event) =>
-                  updateState((current) => ({
-                    ...current,
-                    rounded: event.target.checked,
-                  }))
-                }
-              />
-              모서리 둥글게
-            </label>
-            <label className="switch-row">
-              <input
-                checked={state.autoFill}
-                type="checkbox"
-                onChange={(event) =>
-                  updateState((current) => ({
-                    ...current,
-                    autoFill: event.target.checked,
-                  }))
-                }
-              />
-              빈 칸은 사진 반복
-            </label>
+            <div className="toggle-grid">
+              <label className="switch-row">
+                <input
+                  checked={state.rounded}
+                  type="checkbox"
+                  onChange={(event) =>
+                    updateState((current) => ({
+                      ...current,
+                      rounded: event.target.checked,
+                    }))
+                  }
+                />
+                모서리 둥글게
+              </label>
+              <label className="switch-row">
+                <input
+                  checked={state.autoFill}
+                  type="checkbox"
+                  onChange={(event) =>
+                    updateState((current) => ({
+                      ...current,
+                      autoFill: event.target.checked,
+                    }))
+                  }
+                />
+                빈 칸은 사진 반복
+              </label>
+            </div>
             <div className="color-row">
               <span>배경</span>
               <div>
@@ -632,143 +741,48 @@ function App() {
               </div>
             </div>
           </section>
-        </aside>
+        </div>
+      )
+    }
 
-        <section className="preview-column" aria-label="미리보기">
-          <div className="preview-toolbar">
-            <div>
-              <h2>미리보기</h2>
-              <p>
-                {paper.name} · {layout.name} · 300 DPI 출력
-              </p>
+    if (step === 'adjust') {
+      return (
+        <div className="step-content">
+          <section className="flow-section">
+            <div className="section-heading">
+              <h2>칸 선택</h2>
+              <span>{selectedLabel}</span>
             </div>
-            <div className="export-actions">
-              <button
-                type="button"
-                disabled={exporting || state.photos.length === 0}
-                onClick={() => void exportImage('image/png')}
-              >
-                PNG 저장
-              </button>
-              <button
-                type="button"
-                disabled={exporting || state.photos.length === 0}
-                onClick={() => void exportImage('image/jpeg')}
-              >
-                JPEG 저장
-              </button>
-            </div>
-          </div>
-
-          <div className="sheet-stage">
-            <div
-              className={state.rounded ? 'sheet rounded' : 'sheet'}
-              style={sheetStyle}
-            >
-              {layout.cells.map((layoutCell, index) => {
-                const cell = state.cells[index] ?? createCell(index)
-                const photo = getPhotoForCell(cell, index, state)
-                const selected = activeCell?.id === cell.id
-                const rect = getCssRect(layoutCell, paper, state)
-
-                return (
-                  <div
-                    aria-label={`${index + 1}번 칸`}
-                    className={selected ? 'photo-cell selected' : 'photo-cell'}
-                    key={cell.id}
-                    role="button"
-                    style={rect}
-                    tabIndex={0}
-                    onClick={() =>
-                      updateState((current) => ({
-                        ...current,
-                        activeCellId: cell.id,
-                      }))
-                    }
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        updateState((current) => ({
-                          ...current,
-                          activeCellId: cell.id,
-                        }))
-                      }
-                    }}
-                    onPointerDown={(event) =>
-                      handlePointerDown(event, cell, index)
-                    }
-                    onPointerMove={handlePointerMove}
-                    onPointerUp={handlePointerUp}
-                    onPointerCancel={handlePointerUp}
-                    onWheel={(event) => handleWheel(event, cell, index)}
-                  >
-                    {photo ? (
-                      <img
-                        alt=""
-                        draggable={false}
-                        src={photo.src}
-                        style={getImageStyle(photo, cell, layoutCell, paper)}
-                      />
-                    ) : (
-                      <div className="empty-cell">
-                        <strong>{index + 1}</strong>
-                        <span>사진을 넣어주세요</span>
-                      </div>
-                    )}
-                    <span className="cell-number">{index + 1}</span>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-
-          {state.photos.length === 0 ? (
-            <div className="empty-state">
-              <h2>사진을 고르면 바로 시작돼요</h2>
-              <p>
-                사진은 서버로 올라가지 않고 이 브라우저에만 저장됩니다. 샘플로
-                먼저 배치를 확인할 수도 있어요.
-              </p>
-              <div>
-                <button type="button" onClick={() => fileInputRef.current?.click()}>
-                  내 사진 선택
+            <div className="cell-picker" aria-label="칸 선택">
+              {state.cells.map((cell, index) => (
+                <button
+                  className={cell.id === activeCell?.id ? 'selected' : ''}
+                  key={cell.id}
+                  type="button"
+                  onClick={() => selectCell(cell.id)}
+                >
+                  {index + 1}
                 </button>
-                <button type="button" onClick={() => void addSamples()}>
-                  샘플 넣기
-                </button>
-              </div>
+              ))}
             </div>
-          ) : (
-            <p className="print-hint">
-              프린터 설정에서 용지를 {paper.name}로 맞추고, 여백 없음 또는 실제
-              크기 100%를 선택하면 잘림을 줄일 수 있어요.
+            <p className="helper-text">
+              미리보기의 칸을 끌어도 사진 위치가 바뀝니다.
             </p>
-          )}
+          </section>
 
-          {storageMessage ? (
-            <p className="storage-warning">{storageMessage}</p>
-          ) : null}
-        </section>
-
-        <aside className="panel panel-right" aria-label="사진 편집">
-          <section className="control-group">
-            <div className="group-title">
+          <section className="flow-section">
+            <div className="section-heading">
               <h2>사진함</h2>
               <span>{state.photos.length}장</span>
-            </div>
-            <div className="photo-actions">
-              <button type="button" onClick={() => fileInputRef.current?.click()}>
-                추가
-              </button>
-              <button type="button" onClick={() => void addSamples()}>
-                샘플
-              </button>
             </div>
             {state.photos.length > 0 ? (
               <div className="photo-tray">
                 {state.photos.map((photo) => (
                   <div className="thumb-wrap" key={photo.id}>
                     <button
-                      className="thumb"
+                      className={
+                        activeCell?.photoId === photo.id ? 'thumb selected' : 'thumb'
+                      }
                       type="button"
                       title="선택한 칸에 넣기"
                       onClick={() => assignPhoto(photo.id)}
@@ -787,18 +801,17 @@ function App() {
                 ))}
               </div>
             ) : (
-              <p className="muted">선택한 칸에 넣을 사진이 여기에 모입니다.</p>
+              <p className="helper-text">사진 담기 단계에서 사진을 먼저 골라주세요.</p>
             )}
           </section>
 
-          <section className="control-group">
-            <div className="group-title">
-              <h2>선택 칸</h2>
-              <span>{activeIndex >= 0 ? `${activeIndex + 1}번` : '-'}</span>
+          <section className="flow-section">
+            <div className="section-heading">
+              <h2>미세 조정</h2>
+              <span>{activePhoto ? activePhoto.name : '-'}</span>
             </div>
             {activeCell && activePhoto ? (
               <div className="edit-stack">
-                <p className="selected-file">{activePhoto.name}</p>
                 <RangeControl
                   label="확대"
                   max={4}
@@ -866,25 +879,210 @@ function App() {
                 </div>
               </div>
             ) : (
-              <p className="muted">
-                미리보기에서 칸을 누르고 사진함의 썸네일을 선택하세요.
+              <p className="helper-text">
+                칸을 고른 뒤 사진함의 썸네일을 누르면 조정할 수 있어요.
               </p>
             )}
           </section>
+        </div>
+      )
+    }
 
-          <section className="control-group">
-            <div className="group-title">
-              <h2>작업</h2>
-              <span>자동 저장</span>
-            </div>
-            <p className="muted">
-              새로고침해도 현재 배치가 복원됩니다. 공용 PC에서는 출력 후 작업을
-              지워주세요.
-            </p>
-            <button className="danger" type="button" onClick={clearWork}>
-              작업 지우기
+    return (
+      <div className="step-content">
+        <section className="flow-section">
+          <div className="section-heading">
+            <h2>저장</h2>
+            <span>300 DPI</span>
+          </div>
+          <div className="save-summary">
+            <strong>
+              {paper.name} · {layout.name}
+            </strong>
+            <span>{state.photos.length}장 사진으로 만든 한판입니다.</span>
+          </div>
+          <p className="print-hint">
+            프린터 설정에서 용지를 {paper.name}로 맞추고, 여백 없음 또는 실제 크기
+            100%를 선택하면 잘림을 줄일 수 있어요.
+          </p>
+          <button
+            className="secondary-save"
+            type="button"
+            disabled={exporting || state.photos.length === 0}
+            onClick={() => void exportImage('image/jpeg')}
+          >
+            JPEG 저장
+          </button>
+        </section>
+
+        <section className="flow-section">
+          <div className="section-heading">
+            <h2>작업</h2>
+            <span>자동 저장</span>
+          </div>
+          <p className="helper-text">
+            새로고침해도 현재 배치가 복원됩니다. 공용 PC에서는 출력 후 작업을
+            지워주세요.
+          </p>
+          <button className="danger" type="button" onClick={clearWork}>
+            작업 지우기
+          </button>
+        </section>
+      </div>
+    )
+  }
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">브라우저 안에서만 작업</p>
+          <h1>사진 한판</h1>
+          <p className="intro">
+            사진 담기부터 저장까지 한 단계씩 진행해요.
+          </p>
+        </div>
+        <input
+          ref={fileInputRef}
+          className="visually-hidden"
+          type="file"
+          accept="image/*"
+          multiple
+          onChange={handleFiles}
+        />
+      </header>
+
+      <nav className="stepper" aria-label="작업 단계">
+        {flowSteps.map((item, index) => {
+          const locked = state.photos.length === 0 && index > 0
+
+          return (
+            <button
+              aria-current={item.id === step ? 'step' : undefined}
+              className={item.id === step ? 'active' : ''}
+              disabled={locked}
+              key={item.id}
+              type="button"
+              onClick={() => setStep(item.id)}
+            >
+              <span>{index + 1}</span>
+              {item.label}
             </button>
-          </section>
+          )
+        })}
+      </nav>
+
+      <section className="workspace" aria-label="사진 한판 편집기">
+        <section className="preview-column" aria-label="미리보기">
+          <div className="preview-toolbar">
+            <div>
+              <h2>미리보기</h2>
+              <p>
+                {paper.name} · {layout.name} · 300 DPI 출력
+              </p>
+            </div>
+            <button
+              className="preview-step-link"
+              type="button"
+              disabled={state.photos.length === 0}
+              onClick={() => setStep('save')}
+            >
+              저장으로
+            </button>
+          </div>
+
+          <div className="sheet-stage">
+            <div
+              className={state.rounded ? 'sheet rounded' : 'sheet'}
+              style={sheetStyle}
+            >
+              {layout.cells.map((layoutCell, index) => {
+                const cell = state.cells[index] ?? createCell(index)
+                const photo = getPhotoForCell(cell, index, state)
+                const selected = activeCell?.id === cell.id
+                const rect = getCssRect(layoutCell, paper, state)
+
+                return (
+                  <div
+                    aria-label={`${index + 1}번 칸`}
+                    className={selected ? 'photo-cell selected' : 'photo-cell'}
+                    key={cell.id}
+                    role="button"
+                    style={rect}
+                    tabIndex={0}
+                    onClick={() =>
+                      selectCell(cell.id)
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        selectCell(cell.id)
+                      }
+                    }}
+                    onPointerDown={(event) =>
+                      handlePointerDown(event, cell, index)
+                    }
+                    onPointerMove={handlePointerMove}
+                    onPointerUp={handlePointerUp}
+                    onPointerCancel={handlePointerUp}
+                    onWheel={(event) => handleWheel(event, cell, index)}
+                  >
+                    {photo ? (
+                      <img
+                        alt=""
+                        draggable={false}
+                        src={photo.src}
+                        style={getImageStyle(photo, cell, layoutCell, paper)}
+                      />
+                    ) : (
+                      <div className="empty-cell">
+                        <strong>{index + 1}</strong>
+                        <span>사진을 넣어주세요</span>
+                      </div>
+                    )}
+                    <span className="cell-number">{index + 1}</span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          <p className="preview-note">{currentStep.summary}</p>
+
+          {storageMessage ? (
+            <p className="storage-warning">{storageMessage}</p>
+          ) : null}
+        </section>
+
+        <aside className="step-panel" aria-label={currentStep.label}>
+          <div className="panel-head">
+            <div>
+              <p className="eyebrow">현재 단계</p>
+              <h2>{currentStep.label}</h2>
+            </div>
+            <span>
+              {currentStepIndex + 1}/{flowSteps.length}
+            </span>
+          </div>
+          {renderStepPanel()}
+          <div className="stage-actions">
+            <button
+              className="ghost-action"
+              type="button"
+              disabled={currentStepIndex === 0}
+              onClick={goToPreviousStep}
+            >
+              이전
+            </button>
+            <button
+              className="primary-action"
+              type="button"
+              disabled={primaryDisabled}
+              onClick={runPrimaryAction}
+            >
+              {primaryLabel}
+            </button>
+          </div>
         </aside>
       </section>
     </main>
@@ -955,6 +1153,20 @@ function loadState(): SheetState {
     })
   } catch {
     return ensureActiveCell(defaultState())
+  }
+}
+
+function hasStoredPhotos(): boolean {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) {
+      return false
+    }
+
+    const parsed = JSON.parse(raw) as Partial<SheetState>
+    return Array.isArray(parsed.photos) && parsed.photos.length > 0
+  } catch {
+    return false
   }
 }
 
